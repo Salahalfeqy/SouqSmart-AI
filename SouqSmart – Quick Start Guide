@@ -1,0 +1,190 @@
+# SouqSmart – Quick Start Guide
+
+> **Prerequisites**
+> - Windows 10/11 with PowerShell or `cmd`.
+> - Python 3.13 (the virtual environment already contains it).
+> - Apache (XAMPP) installed at `C:\xampp` – used to serve the PHP product catalog.
+> - Environment variables configured in `.env` (see `.env.example` for the required keys).
+
+---
+
+## 1. Verify the .env file
+
+```text
+# .env (example – copy from .env.example and edit values)
+SOUQSMART_SERVICE_KEY=your_service_key
+SOUQSMART_GEMINI_API_KEY=your_gemini_key   # optional for LLM mode
+SOUQSMART_GEMINI_MODEL=gemini-3.8-flash
+SOUQSMART_GEMINI_TIMEOUT_SECONDS=3.5
+SOUQSMART_INTENT_PARSER=deterministic   # use "llm" for Gemini mode
+SOUQSMART_CATALOG_PROVIDER=php           # or "fixture" for local test data
+SOUQSMART_PHP_BASE_URL=http://127.0.0.1/nice-shop
+SOUQSMART_CATALOG_TIMEOUT_SECONDS=3.0
+```
+
+Make sure the file **does not contain trailing spaces** and the values match your setup.
+
+---
+
+## 2. Start the PHP catalog (Apache)
+
+```cmd
+cd /d C:\xampp
+apache\bin\httpd.exe
+```
+
+- If you see `Only one usage of each socket address ...` that means Apache is already running on port 80.  In that case you can skip this step.
+- The catalog will be reachable at `http://127.0.0.1/nice-shop`.
+
+---
+
+## 3. Activate the Python virtual environment
+
+```cmd
+cd "D:\AI\souq smart"
+.\.venv\Scripts\activate
+```
+
+You should see the prompt change to `(venv)`.
+
+---
+
+## 4. (Optional) Install / update dependencies
+
+If you ever need to reinstall packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+The lockfile already contains all needed libraries (`fastapi`, `uvicorn`, `httpx`, `pydantic`, etc.).
+
+---
+
+## 5. Run the FastAPI server
+
+```cmd
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+- The server starts in the foreground; you’ll see a line similar to:
+
+# SouqSmart – Quick Start Guide
+
+> **Prerequisites**
+> - Windows 10/11 with PowerShell or `cmd`.
+> - Python 3.13 (the virtual environment already contains it).
+> - Apache (XAMPP) installed at `C:\xampp` – used to serve the PHP product catalog.
+> - Environment variables configured in `.env` (see `.env.example` for the required keys).
+
+---
+
+## 1. Verify the .env file
+
+```text
+# .env (example – copy from .env.example and edit values)
+SOUQSMART_SERVICE_KEY=your_service_key
+SOUQSMART_GEMINI_API_KEY=your_gemini_key   # optional for LLM mode
+SOUQSMART_GEMINI_MODEL=gemini-3.8-flash
+SOUQSMART_GEMINI_TIMEOUT_SECONDS=3.5
+SOUQSMART_INTENT_PARSER=deterministic   # use "llm" for Gemini mode
+SOUQSMART_CATALOG_PROVIDER=php           # or "fixture" for local test data
+SOUQSMART_PHP_BASE_URL=http://127.0.0.1/nice-shop
+SOUQSMART_CATALOG_TIMEOUT_SECONDS=3.0
+```
+
+Make sure the file **does not contain trailing spaces** and the values match your setup.
+
+---
+
+## 2. Start the PHP catalog (Apache)
+
+```cmd
+cd /d C:\xampp
+apache\bin\httpd.exe
+```
+
+- If you see `Only one usage of each socket address ...` that means Apache is already running on port 80.  In that case you can skip this step.
+- The catalog will be reachable at `http://127.0.0.1/nice-shop`.
+
+---
+
+## 3. Activate the Python virtual environment
+
+```cmd
+cd "D:\AI\souq smart"
+.\.venv\Scripts\activate
+```
+
+You should see the prompt change to `(venv)`.
+
+---
+
+## 4. (Optional) Install / update dependencies
+
+If you ever need to reinstall packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+The lockfile already contains all needed libraries (`fastapi`, `uvicorn`, `httpx`, `pydantic`, etc.).
+
+---
+
+## 5. Run the FastAPI server
+
+```cmd
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+- The server starts in the foreground; you’ll see a line similar to:
+
+INFO: Uvicorn running on http://127.0.0.1:8000
+ (Press CTRL+C to quit)
+
+- **If you prefer it to stay in the background**, use:
+
+```cmd
+start /b uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+6. Quick health‑check
+
+Open a browser (or curl) and request:
+
+http://127.0.0.1:8000/v1/health
+
+You should receive JSON like:
+
+{
+  "status": "ok",
+  "version": "1.0.0",
+  "catalog_provider": "php",
+  "llm": {
+    "status": "disabled",                     // or "enabled"/"unconfigured" if LLM mode is on
+    "provider": "gemini",
+    "model": "gemini-3.8-flash",
+    "configured": false,
+    "usable": false
+  }
+}
+
+If llm.status shows enabled and you have a valid Gemini API key, Gemini‑generated replies will be used for LLM‑enabled requests.
+7. Run the test suite (optional but recommended)
+
+
+pytest -q
+
+All tests should pass (currently 66 passed).
+If you want only the Phase‑3 acceptance tests:
+
+pytest -q tests/test_phase3_repairs.py
+
+8. Stopping the services
+FastAPI: Press CTRL+C in the terminal where uvicorn is running.
+Apache: Open a new terminal and run:
+
+cd /d C:\xampp
+apache\bin\httpd.exe -k stop
+
+9. Common troubleshooting

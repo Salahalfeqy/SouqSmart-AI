@@ -1,0 +1,85 @@
+# Environment / secrets (never commit)
+.env*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# IDE
+.idea/
+.vscode/
+
+# Browser test artifacts
+browser_acceptance_report.json
+playwright-report/
+test-results/
+playwright/.cache/
+
+# Local metadata and databases
+.kilo/
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*_dump.sql
+dump.sql
+
+# Logs and runtime data
+logs/
+*.log
+
+# Temporary / scratch
+scratch/
+*.tmp
+*.temp
+~$*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Historical handoff / audit reports (local context only, not deliverable documentation)
+AGENT_A_WORK_REPORT.md
+FINAL_PHASE1_HANDOFF_READONLY_AUDIT.md
+FINAL_RELEASE_AUDIT_REPORT.md
+INDEPENDENT_AGENT_B_SECURITY_REMEDIATION_VERIFICATION.md
+PHASE1_FINAL_INTEGRATION_REGRESSION_REPORT.md
+PHASE1_INTEGRATION_VERIFICATION_REPORT.md
+DOCUMENTATION_IMPLEMENTATION_CONSISTENCY_AUDIT.md
+souqsmart-ai-phase0-report (1).md
+souqsmart-ai-phase1-implementation-report.md
+SOUQSMART_CONTEXT.md
+"SouqSmart – Quick Start Guide"
