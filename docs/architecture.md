@@ -10,11 +10,13 @@ SouqSmart is a read-only FastAPI AI shopping assistant integrated into the NiceS
 | PHP chat proxy (`/ajax/chat`) | CSRF verification, rate limiting, input validation, proxies to FastAPI with `X-Service-Key`, sanitizes upstream errors |
 | FastAPI (`app/main.py`) | HTTP layer: routes, middleware, service-key auth, error handling, session orchestration |
 | Intent parser (`app/intents.py`) | Parses messages into structured intent (deterministic rules, optional Gemini) |
-| Services (`app/services.py`) | Product ranking, comparison, template chat replies, intent parsing entrypoint |
+| Services (`app/services.py`) | Product ranking, comparison, deterministic fallback replies, intent parsing entrypoint |
 | Catalog provider (`app/catalog.py`) | Abstract catalog interface; `PHPProvider` calls NiceShop, `FixtureProvider` for tests |
-| Sessions (`app/sessions.py`) | In-memory chat sessions with TTL and turn limit |
+| Hybrid retriever (`app/rag/retriever.py`) | Dense Qdrant plus PHP keyword retrieval, reciprocal-rank fusion, PHP hydration |
+| Knowledge manager (`app/rag/knowledge.py`) | Qdrant policy retrieval and approved local policy fallback |
+| Sessions (`app/sessions.py`, `app/sessions_db.py`) | Memory or SQLite-backed sessions with TTL, turn limit, and retrieval metadata |
 | Security (`app/security.py`) | `X-Service-Key` verification using constant-time comparison |
-| Response generator (`app/response_generator.py`) | Optional Gemini response generation grounded on catalog facts |
+| Response generator (`app/response_generator.py`) | Gemini generation grounded on verified product/policy evidence and recent context |
 | Schemas (`app/schemas.py`) | Pydantic request/response validation |
 | PHP catalog API (`/internal/catalog/*`) | Read-only SQL queries against MariaDB; canonical product serialization |
 | MariaDB / MySQL | Product data source of truth (NiceShop-side only) |
@@ -28,7 +30,9 @@ sequenceDiagram
     participant FastAPI as FastAPI Service
     participant Intent as Intent Parser
     participant Catalog as Catalog Provider
+    participant RAG as Hybrid / Policy Retrieval
     participant PHPcat as PHP Catalog API
+    participant Qdrant as Qdrant
     participant DB as MariaDB
 
     Browser->>PHP: POST /ajax/chat (message, CSRF, session_id)
@@ -43,10 +47,19 @@ sequenceDiagram
         DB-->>PHPcat: rows
         PHPcat-->>Catalog: canonical products
         Catalog-->>FastAPI: products
+        opt Hybrid retrieval enabled
+            FastAPI->>RAG: dense + keyword candidates
+            RAG->>Qdrant: semantic candidates
+            RAG->>PHPcat: keyword candidates and live hydration
+            RAG-->>FastAPI: fused, hydrated products
+        end
+    end
+    opt Policy intent
+        FastAPI->>Qdrant: retrieve approved policy chunks
+        FastAPI->>FastAPI: use approved local document if Qdrant unavailable
     end
     alt Gemini enabled
-        FastAPI->>Intent: generate reply (grounded on products)
-        Intent-->>FastAPI: generated text
+        FastAPI->>FastAPI: generate reply from evidence and recent conversation context
     else deterministic
         FastAPI->>Intent: template chat_reply
         Intent-->>FastAPI: template text
@@ -67,7 +80,7 @@ The parser never trusts product IDs, prices, or stock from LLM output. It only c
 
 ## Deterministic Fallback
 
-Whenever Gemini is unavailable, misconfigured, or returns an error, the service falls back to deterministic template replies in `app/services.py`. The fallback:
+When Gemini is unavailable, misconfigured, rate-limited, or returns invalid/unverified claims, the service falls back to deterministic replies in `app/services.py`. The fallback:
 - Never invents products, prices, or URLs
 - Returns honest "no results" messages when the catalog is empty
 - Distinguishes laptop devices from accessories
@@ -78,14 +91,15 @@ Whenever Gemini is unavailable, misconfigured, or returns an error, the service 
 
 Gemini is used for:
 - Intent parsing (`app/intents.py` LLMIntentParser)
-- Response generation (`app/response_generator.py` ResponseGenerator)
+- Product and policy response generation (`app/response_generator.py` ResponseGenerator) whenever a key is configured; this is independent of the intent-parser mode
+- Recent conversation context and retrieved evidence are included in the shared prompt builder (`app/rag/context_builder.py`)
 
 Security rules:
 - API key is sent in the request header/URL only to `generativelanguage.googleapis.com`
 - API keys are never logged
-- User messages are truncated to 1000 characters before sending
-- Generated replies are scanned and rejected if they contain prices, URLs, or fabricated product names ("Magic")
-- All validation (budget, currency, stock) happens before generation; the generator never invents data
+- Customer messages and recent turns are marked as untrusted data in the prompt
+- Currency-qualified prices must match a retrieved catalog product; generated URLs are rejected
+- Catalog filtering, live prices, availability, and policy approval remain controlled by deterministic retrieval and PHP
 - Any exception triggers deterministic fallback
 
 ## Catalog Integration
@@ -99,11 +113,12 @@ The PHP catalog serializes canonical products that omit `cost_price`, exact inve
 
 ## Session Handling
 
-`MemorySessions` stores sessions in process memory:
-- Each session has a UUID and a list of turns
+The configured session store is either `MemorySessions` or `DatabaseSessionStore` (SQLite):
+- Each session has an owner-bound UUID and a bounded list of turns
 - Idle sessions expire after `SOUQSMART_SESSION_TTL_SECONDS` (default 1800s)
 - Turns are capped at `SOUQSMART_SESSION_TURN_LIMIT` (default 20)
-- Sessions are lost on service restart (no persistence)
+- Stored turn metadata includes rewritten queries, constraints, retrieved product IDs, and evidence sources
+- SQLite persistence is local to the AI service and does not access or modify NiceShop's MariaDB
 
 ## Product Response Format
 

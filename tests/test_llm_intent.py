@@ -154,6 +154,24 @@ def test_llm_ambiguous_requests_requiring_clarification():
     assert intent.clarification_message == "Could you please specify whether you want electronics or stationery?"
 
 
+def test_llm_general_conversation_intent():
+    json_conversation = """{
+        "intent_type": "conversation",
+        "clean_query": "",
+        "catalog_query": "",
+        "language": "en",
+        "is_compare": false,
+        "is_browse": false,
+        "is_stock": false
+    }"""
+    client = httpx.Client(transport=httpx.MockTransport(lambda req: make_gemini_response(json_conversation)))
+    parser = LLMIntentParser(api_key="mock-key", http_client=client)
+
+    intent = parser.parse("Who are you?")
+    assert intent.intent_type == "conversation"
+    assert intent.catalog_query == ""
+
+
 # 6. Invalid structured output triggers fallback
 def test_llm_invalid_structured_output_triggers_fallback():
     # Broken JSON from provider

@@ -56,6 +56,72 @@ def test_successful_generation(monkeypatch):
     assert reply == "Here are the headphones you asked for."
     assert mock_client.called
 
+
+def test_prompt_includes_original_message_history_and_verified_context(monkeypatch):
+    from app.config import Settings
+
+    class DummySettings(Settings):
+        gemini_api_key: str = "test-key"
+
+    monkeypatch.setattr("app.config.get_settings", lambda: DummySettings())
+    intent = ParsedIntent(intent_type="search", clean_query="headphones", catalog_query="headphones", language="en")
+    product = make_product(1, "Wireless Headphones", "1450")
+    prompt = ResponseGenerator()._build_prompt(
+        intent,
+        [product],
+        "en",
+        user_message="Show me headphones for calls",
+        rewritten_query="headphones for calls",
+        history=[{"user": "I need something for work", "assistant": "What kind of product?"}],
+    )
+
+    assert "Show me headphones for calls" in prompt
+    assert "headphones for calls" in prompt
+    assert "I need something for work" in prompt
+    assert "Wireless Headphones" in prompt
+    assert "1450 EGP" in prompt
+
+
+def test_general_prompt_uses_history_without_store_facts(monkeypatch):
+    from app.config import Settings
+
+    class DummySettings(Settings):
+        gemini_api_key: str = "test-key"
+
+    monkeypatch.setattr("app.config.get_settings", lambda: DummySettings())
+    intent = ParsedIntent(intent_type="conversation", language="ar")
+    prompt = ResponseGenerator()._build_general_prompt(
+        intent,
+        "أنت مين؟",
+        "ar",
+        history=[{"user": "عاوز سماعة", "assistant": "إيه نوع السماعة اللي بتدور عليها؟"}],
+    )
+
+    assert "Response language: ar" in prompt
+    assert "أنت مين؟" in prompt
+    assert "عاوز سماعة" in prompt
+    assert "No verified product or policy evidence is provided" in prompt
+    assert "Verified Product Facts" not in prompt
+
+
+@pytest.mark.parametrize("reply", [
+    "The headphones are currently in stock.",
+    "This model has a 20-hour battery.",
+    "Shipping is free on all orders.",
+])
+def test_general_response_rejects_unverified_catalog_or_policy_claims(reply):
+    with pytest.raises(RuntimeError, match="unverified"):
+        ResponseGenerator._validate_general_generated_text(reply)
+
+
+def test_price_validation_allows_only_catalog_prices():
+    products = [make_product(1, "Wireless Headphones", "1450")]
+
+    assert ResponseGenerator._validate_generated_text("Wireless Headphones: 1,450 EGP", products)
+    with pytest.raises(RuntimeError, match="unverified price"):
+        ResponseGenerator._validate_generated_text("Wireless Headphones: 1500 EGP", products)
+
+
 def test_missing_api_key(monkeypatch, caplog):
     # Force empty API key via settings monkeypatch
     from app.config import Settings, get_settings

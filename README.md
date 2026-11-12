@@ -1,6 +1,6 @@
 # SouqSmart — AI Shopping Assistant
 
-Deterministic FastAPI AI shopping assistant service integrated with the NiceShop PHP storefront. It provides read-only catalog search, product comparison, and template-based chat through protected internal PHP catalog endpoints. Gemini is available as an optional LLM intent parser / response generator with a deterministic fallback.
+FastAPI AI shopping assistant integrated with the NiceShop PHP storefront. It provides read-only catalog search, product comparison, hybrid RAG retrieval, and evidence-grounded response generation through protected internal PHP catalog endpoints. Gemini generates natural product and policy responses when configured; deterministic handling remains for validation, clarification, and service failures.
 
 > **Repository scope:** This repository contains the Python/FastAPI service only. The NiceShop PHP storefront lives separately at `C:\xampp\htdocs\nice-shop` and is documented here for integration purposes, not copied into this repository.
 
@@ -9,9 +9,11 @@ Deterministic FastAPI AI shopping assistant service integrated with the NiceShop
 - Read-only product search through the protected NiceShop catalog API (`POST /internal/catalog/search`)
 - Product lookup by ID (`GET /internal/catalog/products`)
 - Product comparison with derived cheapest price and price spread (same currency only)
+- Hybrid product retrieval with live product, price, and availability hydration from PHP
+- Approved policy retrieval from Qdrant, with a checked-in approved-document fallback
 - Deterministic, template-based chat replies in English and Egyptian Arabic
-- Optional Gemini LLM intent parsing and response generation with safe fallback
-- In-memory chat sessions with TTL and turn-limit management
+- Optional Gemini intent parsing and grounded response generation with safe fallback
+- Configurable memory or SQLite-backed chat sessions with TTL and turn limits
 - Service-key authentication (`X-Service-Key`) on all protected endpoints
 - Sanitized error responses; no stack traces or secrets leaked to clients
 - Fixture catalog provider for isolated testing and development
@@ -185,7 +187,7 @@ Create `.env` from `.env.example`. Required variables:
 | `SOUQSMART_HOST` | `127.0.0.1` | Settings default (pass `--host` explicitly to uvicorn) |
 | `SOUQSMART_PORT` | `8000` | Settings default (pass `--port` explicitly to uvicorn) |
 | `SOUQSMART_INTENT_PARSER` | `deterministic` | `deterministic` or `llm` (Gemini) |
-| `GEMINI_API_KEY` | none | Gemini API key (only used in `llm` mode) |
+| `GEMINI_API_KEY` | none | Enables Gemini generation; LLM intent parsing additionally requires `SOUQSMART_INTENT_PARSER=llm` |
 | `GEMINI_MODEL` | `gemini-3.8-flash` | Gemini model name |
 | `GEMINI_TIMEOUT_SECONDS` | `3.5` | Gemini request timeout in seconds |
 
@@ -292,8 +294,9 @@ See `docs/security.md` for details.
 
 - Chat sessions are stored in process memory and are lost on service restart.
 - Session lifetime defaults to 30 minutes (1800s) with 20 stored turns.
-- No persistent memory, RAG, competitor scraping, coupons, checkout, or database writes.
-- Generated chat text is template-based unless Gemini `llm` mode is enabled.
+- Session storage uses the configured memory or SQLite-backed session store; it does not write to NiceShop's database.
+- Product and approved-policy answers use retrieved evidence; deterministic replies remain for unsupported, ambiguous, or failed-generation cases.
+- No competitor scraping, coupons, checkout, or NiceShop database writes.
 - Price-derived comparisons require a single comparable currency.
 - No production deployment has been performed; not production-ready.
 - PHP price-range filters may not be fully enforced on the NiceShop side (documented integration risk).

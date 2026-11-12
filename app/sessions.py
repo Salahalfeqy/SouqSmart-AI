@@ -1,6 +1,7 @@
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -15,7 +16,7 @@ class MemorySessions:
         self.turn_limit = turn_limit
         self._sessions: dict[str, Session] = {}
 
-    def get_or_create(self, session_id: str | None) -> tuple[str, str]:
+    def get_or_create(self, session_id: str | None, owner_hash: str = "guest") -> tuple[str, str]:
         now = time.monotonic()
         expired = [key for key, session in self._sessions.items() if now - session.updated_at > self.ttl_seconds]
         for key in expired:
@@ -28,9 +29,22 @@ class MemorySessions:
         self._sessions[new_id] = Session(updated_at=now)
         return new_id, "created" if session_id is None else "new"
 
-    def add_turn(self, session_id: str, user: str, assistant: str) -> None:
+    def add_turn(self, session_id: str, user: str, assistant: str, **kwargs: Any) -> None:
         session = self._sessions[session_id]
-        session.turns.append({"user": user, "assistant": assistant})
+        turn = {"user": user, "assistant": assistant, **kwargs}
+        session.turns.append(turn)
         if len(session.turns) > self.turn_limit:
             del session.turns[:-self.turn_limit]
         session.updated_at = time.monotonic()
+
+    def get_turns(self, session_id: str, limit: int | None = None) -> list[dict]:
+        session = self._sessions.get(session_id)
+        if not session:
+            return []
+        if limit is not None:
+            return session.turns[-limit:]
+        return list(session.turns)
+
+    def get_turn_count(self, session_id: str) -> int:
+        session = self._sessions.get(session_id)
+        return len(session.turns) if session else 0

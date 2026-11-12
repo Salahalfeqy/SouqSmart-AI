@@ -114,6 +114,7 @@ class ChatContext(StrictModel):
 
 class ChatRequest(StrictModel):
     session_id: str | None = None
+    owner_hash: str | None = None
     message: str = Field(min_length=1, max_length=2000)
     language: Literal["en", "ar", "auto"] = "auto"
     context: ChatContext = Field(default_factory=ChatContext)

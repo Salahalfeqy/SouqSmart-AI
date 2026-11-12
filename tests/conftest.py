@@ -3,6 +3,7 @@ os.environ["SOUQSMART_CATALOG_PROVIDER"] = "fixture"
 os.environ["SOUQSMART_SERVICE_KEY"] = "test-service-key"
 os.environ["SOUQSMART_INTENT_PARSER"] = "deterministic"
 os.environ["GEMINI_API_KEY"] = ""
+os.environ["SOUQSMART_ALLOW_ANONYMOUS_DEV_SESSIONS"] = "true"
 
 import pytest
 from fastapi.testclient import TestClient

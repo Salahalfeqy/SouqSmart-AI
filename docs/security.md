@@ -50,7 +50,8 @@ The PHP chat proxy rate-limits chat to 20 requests per minute per session. Excee
 - Catalog responses omit `cost_price`, exact inventory quantities, customer data, and order data
 - The PHP chat proxy sanitizes products before returning them to the browser (only `product_id`, `name`, `brand`, `category`, `price`, `availability`, `attributes`, `url`, `image_url`)
 - FastAPI error responses never include stack traces or exception details
-- User messages sent to Gemini are truncated to 1000 characters; generated replies are scanned and rejected if they contain prices, URLs, or fabricated names
+- Gemini receives the current message, recent conversation context, and retrieved evidence needed to answer the request
+- Generated currency-qualified prices must match a retrieved catalog product; generated URLs are rejected
 
 ## AI Service Boundaries
 

@@ -59,7 +59,23 @@ Replace `YOUR_GEMINI_API_KEY` with the key you obtained earlier.
    `http://localhost/nice-shop/catalog.json`
    You should see a JSON array of product objects (name, price, id, url, availability). This file is the source of truth for all product data.
 
-## 5. Run the FastAPI backend
+## 5. Run Qdrant Vector Database
+SouqSmart uses Qdrant for semantic product search and knowledge retrieval.
+A preconfigured Docker Compose file (`docker-compose.yml`) is provided:
+
+```powershell
+# Start Qdrant in detached mode
+docker compose up -d
+
+# Verify Qdrant health check
+curl http://127.0.0.1:6333/readyz
+# Should return: {"title":"qdrant - vector search engine","version":"1.12.1"}
+
+# To stop Qdrant later:
+# docker compose down
+```
+
+## 6. Run the FastAPI backend
 From the project root with the virtualenv activated:
 ```powershell
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload

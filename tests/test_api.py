@@ -1,3 +1,4 @@
+from decimal import Decimal
 import pytest
 from app.catalog import CatalogTimeout, PHPProvider
 from app.main import catalog
@@ -74,11 +75,38 @@ def test_session_expiry(monkeypatch):
     assert status == "new"
 
 
-def test_template_fallback_does_not_invent_specs(client, headers):
+def test_template_fallback_does_not_invent_specs(client, headers, monkeypatch):
+    monkeypatch.setattr("app.main.settings.gemini_api_key", "")
     response = client.post("/v1/chat/messages", headers=headers, json={"message": "find laptop"})
     assert response.status_code == 200
     assert response.json()["ai_status"] == "disabled"
     assert "Catalog results" in response.json()["reply"]["text"]
+
+
+def test_grounded_response_generation_is_independent_of_intent_parser_mode(client, headers, monkeypatch):
+    from app.response_generator import ResponseGenerator
+
+    captured = {}
+
+    async def fake_generate(self, intent, products, language, **context):
+        captured.update(intent=intent, products=products, language=language, context=context)
+        return "Here are the matching catalog products."
+
+    monkeypatch.setattr("app.main.settings.gemini_api_key", "test-key")
+    monkeypatch.setattr(ResponseGenerator, "agenerate", fake_generate)
+
+    response = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={"message": "find laptop", "language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"]["text"] == "Here are the matching catalog products."
+    assert captured["intent"].intent_type == "search"
+    assert captured["products"]
+    assert captured["context"]["user_message"] == "find laptop"
+    assert captured["context"]["history"] == []
 
 
 @pytest.mark.asyncio
@@ -431,3 +459,338 @@ def test_egp_budget_response_message(client, headers, monkeypatch):
     data = response.json()
     assert len(data["products"]) == 1
     assert "1000.00 EGP" in data["reply"]["text"] or "1000 EGP" in data["reply"]["text"]
+
+
+def test_strict_product_type_validation_out_of_catalog(client, headers, monkeypatch):
+    """
+    Task 1: Strict Product-Type Validation for Out-of-Catalog Product Matching.
+    Ensures that when a user asks for an explicit category that does not exist in the catalog
+    (e.g., laptops), semantically similar yet irrelevant items (SSD, Webcam, Reading Lamp)
+    are NOT returned as matching products.
+    """
+    mixed_candidates = [
+        Product(
+            product_id="10",
+            name="Portable SSD 1TB",
+            brand="NovaTech",
+            category="Electronics",
+            price=Price(amount="3400.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={"description": "Portable SSD 1TB for everyday use."},
+            url="http://localhost/nice-shop/product?id=10",
+        ),
+        Product(
+            product_id="7",
+            name="Webcam HD",
+            brand="NovaTech",
+            category="Electronics",
+            price=Price(amount="1250.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={"description": "Webcam HD for everyday use."},
+            url="http://localhost/nice-shop/product?id=7",
+        ),
+        Product(
+            product_id="56",
+            name="Reading Lamp",
+            brand="PaperTrail",
+            category="Books & Stationery",
+            price=Price(amount="370.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={"description": "Reading Lamp for everyday use."},
+            url="http://localhost/nice-shop/product?id=56",
+        ),
+        Product(
+            product_id="9",
+            name="Laptop Stand",
+            brand="NovaTech",
+            category="Electronics",
+            price=Price(amount="760.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={"description": "Laptop Stand for everyday use."},
+            url="http://localhost/nice-shop/product?id=9",
+        ),
+    ]
+
+    async def fake_search(payload):
+        return mixed_candidates, len(mixed_candidates)
+
+    monkeypatch.setattr(catalog, "search", fake_search)
+
+    # 1. User: "عايز لابتوب Dell جديد"
+    # Must NOT return SSD, Webcam, Reading Lamp, or Stand as product cards
+    resp_dell = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={"message": "عايز لابتوب Dell جديد"},
+    )
+    assert resp_dell.status_code == 200
+    data_dell = resp_dell.json()
+    assert len(data_dell["products"]) == 0, f"Expected 0 products, got: {data_dell['products']}"
+    returned_pids = [p["product_id"] for p in data_dell["products"]]
+    assert "10" not in returned_pids  # Portable SSD 1TB
+    assert "7" not in returned_pids   # Webcam HD
+    assert "56" not in returned_pids  # Reading Lamp
+    assert "لا تتوفر أجهزة لابتوب" in data_dell["reply"]["text"]
+    assert "Laptop Stand" in data_dell["reply"]["text"]  # Mentions related accessory in text
+
+    # 2. User: "عايز لابتوب" without any accessories available
+    no_accessories = [mixed_candidates[0], mixed_candidates[1]]  # Only SSD and Webcam
+    async def fake_search_no_acc(payload):
+        return no_accessories, len(no_accessories)
+    monkeypatch.setattr(catalog, "search", fake_search_no_acc)
+
+    resp_lap = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={"message": "عايز لابتوب"},
+    )
+    assert resp_lap.status_code == 200
+    data_lap = resp_lap.json()
+    assert len(data_lap["products"]) == 0
+    assert "لا تتوفر أجهزة لابتوب" in data_lap["reply"]["text"]
+
+    # 3. User: "عندك Webcam HD؟" - must still return Webcam HD
+    webcam_item = [mixed_candidates[1]]
+    async def fake_search_webcam(payload):
+        return webcam_item, 1
+    monkeypatch.setattr(catalog, "search", fake_search_webcam)
+
+    resp_webcam = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={"message": "عندك Webcam HD؟"},
+    )
+    assert resp_webcam.status_code == 200
+    data_webcam = resp_webcam.json()
+    assert len(data_webcam["products"]) == 1
+    assert data_webcam["products"][0]["name"] == "Webcam HD"
+
+    # 4. User: "عايز سماعة بلوتوث" - must still return relevant audio
+    audio_items = [
+        Product(
+            product_id="2",
+            name="Bluetooth Speaker",
+            brand="NovaTech",
+            category="Electronics",
+            price=Price(amount="980.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={"description": "Bluetooth Speaker"},
+            url="http://localhost/nice-shop/product?id=2",
+        )
+    ]
+    async def fake_search_audio(payload):
+        return audio_items, 1
+    monkeypatch.setattr(catalog, "search", fake_search_audio)
+
+    resp_audio = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={"message": "عايز سماعة بلوتوث"},
+    )
+    assert resp_audio.status_code == 200
+    data_audio = resp_audio.json()
+    assert len(data_audio["products"]) == 1
+    assert data_audio["products"][0]["name"] == "Bluetooth Speaker"
+
+
+def test_conversational_price_numeric_comparisons(client, headers):
+    """Case A: Numeric comparison extraction for min and max bounds."""
+    from app.intents import DeterministicIntentParser
+    parser = DeterministicIntentParser()
+
+    # 'أكبر من 1000 جنيه' -> minimum price 1000
+    intent_min = parser.parse("عايز حاجة للرياضة أكبر من 1000 جنيه")
+    assert intent_min.filters.get("price_min") == "1000.00"
+    assert "price_max" not in intent_min.filters
+    assert intent_min.budget == Decimal("1000")
+
+    # 'اكبر من 1000 جنيه' (without hamza) -> minimum price 1000
+    intent_min_no_hamza = parser.parse("عايز حاجة للرياضة اكبر من 1000 جنيه")
+    assert intent_min_no_hamza.filters.get("price_min") == "1000.00"
+    assert "price_max" not in intent_min_no_hamza.filters
+
+    # 'أقل من 1000 جنيه' -> maximum price 1000
+    intent_max = parser.parse("عايز حاجة للرياضة أقل من 1000 جنيه")
+    assert intent_max.filters.get("price_max") == "1000.00"
+    assert "price_min" not in intent_max.filters
+    assert intent_max.budget == Decimal("1000")
+
+
+def test_conversational_constraint_replacement(client, headers, monkeypatch):
+    """Case B: Constraint replacement when user sets conflicting price bounds."""
+    from app.intents import merge_conversational_constraints
+
+    # 1. Previous maximum 1000, followed by 'أكبر من 1500 جنيه' -> minimum 1500, old maximum cleared
+    prev_max = {"price_max": "1000.00", "category": "sports"}
+    curr_min = {"price_min": "1500.00"}
+    merged_min = merge_conversational_constraints(prev_max, curr_min, "أكبر من 1500 جنيه")
+    assert merged_min["price_min"] == "1500.00"
+    assert "price_max" not in merged_min
+    assert merged_min["category"] == "sports"
+
+    # 2. Previous minimum 1000, followed by 'أقل من 800 جنيه' -> maximum 800, old minimum cleared
+    prev_min = {"price_min": "1000.00", "category": "sports"}
+    curr_max = {"price_max": "800.00"}
+    merged_max = merge_conversational_constraints(prev_min, curr_max, "أقل من 800 جنيه")
+    assert merged_max["price_max"] == "800.00"
+    assert "price_min" not in merged_max
+    assert merged_max["category"] == "sports"
+
+    # Multi-turn API flow verification
+    async def fake_search(payload):
+        return [], 0
+    monkeypatch.setattr(catalog, "search", fake_search)
+
+    # Session turn 1: maximum 1000
+    r1 = client.post("/v1/chat/messages", headers=headers, json={"message": "عايز حاجة للرياضة في حدود 1000 جنيه"})
+    assert r1.status_code == 200
+    sess_id = r1.json()["session_id"]
+
+    # Session turn 2: greater than 1500 -> replaces previous maximum with minimum
+    r2 = client.post("/v1/chat/messages", headers=headers, json={"session_id": sess_id, "message": "أكبر من 1500 جنيه"})
+    assert r2.status_code == 200
+    reply_text = r2.json()["reply"]["text"]
+    assert "أقل من 1000" not in reply_text
+    assert "1500" in reply_text
+
+
+def test_conversational_constraint_removal(client, headers, monkeypatch):
+    """Case C: Constraint removal when relaxing or dropping price restrictions."""
+    from app.intents import merge_conversational_constraints
+
+    # 1. Previous maximum 1000, followed by 'هاتلي حاجة بسعر أكبر عادي' -> old maximum cleared
+    prev_max = {"price_max": "1000.00", "category": "sports"}
+    merged_relaxed = merge_conversational_constraints(prev_max, {}, "هاتلي حاجة بسعر أكبر عادي")
+    assert "price_max" not in merged_relaxed
+    assert "price_min" not in merged_relaxed
+    assert merged_relaxed["category"] == "sports"
+
+    # 2. Previous min/max, followed by 'السعر مش مهم' -> both cleared
+    prev_both = {"price_min": "500.00", "price_max": "1000.00", "brand": "Nike"}
+    merged_cleared = merge_conversational_constraints(prev_both, {}, "السعر مش مهم")
+    assert "price_min" not in merged_cleared
+    assert "price_max" not in merged_cleared
+    assert merged_cleared["brand"] == "Nike"
+
+    # Multi-turn API flow verification
+    async def fake_search(payload):
+        return [], 0
+    monkeypatch.setattr(catalog, "search", fake_search)
+
+    r1 = client.post("/v1/chat/messages", headers=headers, json={"message": "سماعات في حدود 1000 جنيه"})
+    assert r1.status_code == 200
+    sess_id = r1.json()["session_id"]
+
+    r2 = client.post("/v1/chat/messages", headers=headers, json={"session_id": sess_id, "message": "هاتلي حاجة بسعر أكبر عادي"})
+    assert r2.status_code == 200
+    r2_reply = r2.json()["reply"]["text"]
+    assert "أقل من 1000" not in r2_reply
+
+
+def test_conversational_constraint_preservation(client, headers):
+    """Case D: Unrelated constraints (such as sports category) are preserved when price changes."""
+    from app.intents import merge_conversational_constraints
+
+    # Previous category = sports, followed by 'بسعر أكبر عادي' -> sports category remains active
+    prev_constraints = {"category": "sports", "price_max": "1000.00"}
+    merged = merge_conversational_constraints(prev_constraints, {}, "بسعر أكبر عادي")
+    assert merged.get("category") == "sports"
+    assert "price_max" not in merged
+    assert "price_min" not in merged
+
+
+def test_full_conversational_price_update_scenario(client, headers, monkeypatch):
+    """Full 3-turn live demo reproduction scenario:
+    1. 'عايز حاجة للرياضة في حدود 1000 جنيه' -> reports no products under 1000
+    2. 'خلاص هاتلي حاجه بسعر اكبر عادى' -> relaxes upper bound
+    3. 'عايز حاجة للرياضة اكبر من 1000 جنيه' -> correctly filters by min 1000, never says under 1000
+    """
+    async def fake_search(payload):
+        return [], 0
+    monkeypatch.setattr(catalog, "search", fake_search)
+
+    # Turn 1
+    r1 = client.post("/v1/chat/messages", headers=headers, json={"message": "عايز حاجة للرياضة في حدود 1000 جنيه"})
+    assert r1.status_code == 200
+    sess_id = r1.json()["session_id"]
+    assert "أقل من 1000" in r1.json()["reply"]["text"] or "1000" in r1.json()["reply"]["text"]
+
+    # Turn 2
+    r2 = client.post("/v1/chat/messages", headers=headers, json={"session_id": sess_id, "message": "خلاص هاتلي حاجه بسعر اكبر عادى"})
+    assert r2.status_code == 200
+
+    # Turn 3
+    r3 = client.post("/v1/chat/messages", headers=headers, json={"session_id": sess_id, "message": "عايز حاجة للرياضة اكبر من 1000 جنيه"})
+    assert r3.status_code == 200
+    r3_reply = r3.json()["reply"]["text"]
+    # CRITICAL: Must NOT say "أقل من 1000"! Must indicate 1000 or more!
+    assert "أقل من 1000" not in r3_reply
+    assert "1000.00 EGP أو أكثر" in r3_reply or "1000" in r3_reply
+
+
+def test_price_relaxation_reuses_previous_category_query(client, headers, monkeypatch):
+    import app.main as main_mod
+    from app.query_rewriter import QueryRewriter
+
+    products = [
+        Product(
+            product_id="sports-under-1000",
+            name="Yoga Mat",
+            category="Sports & Outdoors",
+            price=Price(amount="540.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={},
+            url="https://example.invalid/yoga-mat",
+        ),
+        Product(
+            product_id="sports-over-1000",
+            name="Adjustable Dumbbells",
+            category="Sports & Outdoors",
+            price=Price(amount="2300.00", currency="EGP"),
+            availability=Availability(status="in_stock"),
+            attributes={},
+            url="https://example.invalid/adjustable-dumbbells",
+        ),
+    ]
+    search_payloads = []
+
+    class SportsCatalog:
+        async def search(self, payload):
+            search_payloads.append(payload)
+            matches = list(products)
+            filters = payload.get("filters", {})
+            if filters.get("category"):
+                matches = [p for p in matches if p.category == filters["category"]]
+            if filters.get("price_min") is not None:
+                matches = [p for p in matches if Decimal(p.price.amount) >= Decimal(filters["price_min"])]
+            if filters.get("price_max") is not None:
+                matches = [p for p in matches if Decimal(p.price.amount) <= Decimal(filters["price_max"])]
+            return matches, len(matches)
+
+        async def products(self, ids):
+            matches = [p for p in products if p.product_id in ids]
+            return matches, [item for item in ids if item not in {p.product_id for p in matches}]
+
+    monkeypatch.setattr(main_mod, "catalog", SportsCatalog())
+    monkeypatch.setattr(main_mod, "query_rewriter", QueryRewriter(api_key=""))
+
+    first = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={"message": "عايز حاجة للرياضة في حدود 1000 جنيه"},
+    )
+    assert first.status_code == 200
+    assert [p["name"] for p in first.json()["products"]] == ["Yoga Mat"]
+
+    second = client.post(
+        "/v1/chat/messages",
+        headers=headers,
+        json={
+            "session_id": first.json()["session_id"],
+            "message": "خلاص هاتلي حاجه بسعر اكبر عادى",
+        },
+    )
+    assert second.status_code == 200
+    assert {p["name"] for p in second.json()["products"]} == {"Yoga Mat", "Adjustable Dumbbells"}
+    assert search_payloads[1]["query"] == ""
+    assert search_payloads[1]["filters"] == {"category": "Sports & Outdoors"}

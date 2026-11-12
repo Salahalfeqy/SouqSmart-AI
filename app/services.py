@@ -1,4 +1,6 @@
 from decimal import Decimal
+import re
+from typing import Any
 from app.intents import (
     STORE_CURRENCY,
     ChatIntent,
@@ -10,13 +12,14 @@ from app.intents import (
     get_intent_parser,
     extract_comparison_names,
     is_gratitude,
+    is_pure_greeting,
     is_arabic,
 )
 from app.schemas import Product
 
 
 def parse_chat_intent(message: str, forced_lang: str = "auto") -> ParsedIntent:
-    if is_gratitude(message) or extract_comparison_names(message):
+    if is_gratitude(message) or is_pure_greeting(message) or extract_comparison_names(message):
         return DeterministicIntentParser().parse(message, forced_lang)
     parser = get_intent_parser()
     return parser.parse(message, forced_lang)
@@ -96,6 +99,34 @@ def is_accessory_product(p: Product) -> bool:
     return any(kw in name for kw in accessory_keywords) or category in ("accessories", "ملحقات")
 
 
+def is_laptop_product(p: Product) -> bool:
+    """Check if a product is an actual laptop/notebook computer (not an accessory)."""
+    name = p.name.lower()
+    category = (p.category or "").lower()
+    laptop_terms = ("laptop", "notebook", "chromebook", "macbook", "حاسوب محمول", "لابتوب")
+    has_term = any(term in name for term in laptop_terms) or category in ("laptops", "laptop")
+    return has_term and not is_accessory_product(p)
+
+
+def filter_device_candidates(intent: ParsedIntent, products: list[Product]) -> tuple[list[Product], list[Product]]:
+    """
+    Strict product-type validation for explicit product category/device requests.
+    Distinguishes:
+      - Valid product matches (e.g. actual laptops)
+      - Related accessories (e.g. laptop stands)
+      - Unrelated semantic neighbors (which are pruned)
+    """
+    if is_laptop_query(intent) and not is_accessory_query(intent):
+        real_laptops = [p for p in products if is_laptop_product(p)]
+        related_accessories = [
+            p for p in products
+            if is_accessory_product(p) and ("laptop" in p.name.lower() or "stand" in p.name.lower())
+        ]
+        return real_laptops, related_accessories
+
+    return products, []
+
+
 def chat_reply(
     message: str,
     products: list[Product],
@@ -115,6 +146,14 @@ def chat_reply(
         if language == "ar":
             return "العفو! سعيد بمساعدتك. هل تحتاج مساعدة في اختيار منتج آخر؟"
         return "You're welcome! I'm happy to help. Can I help you choose another product?"
+
+    if intent and intent.intent_type == "conversation":
+        if language == "ar":
+            return "أنا مساعد سوق سمارت للتسوق. أقدر أساعدك في اختيار المنتجات ومعلومات المتجر، لكن لا أقدم إجابات متخصصة عن موضوعات خارج التسوق."
+        return "I'm SouqSmart, your shopping assistant. I can help with product discovery and store information, but I'm not a general-purpose expert assistant."
+
+    if intent and intent.is_policy:
+        return generate_policy_reply(intent, language=language)
 
     # 1. Comparison handling with honest result count
     is_compare = (intent and intent.is_compare) or (
@@ -146,6 +185,10 @@ def chat_reply(
         if language == "ar":
             return "أهلاً بك! أنا سوق سمارت، مساعدك للتسوق الذكي. يمكنك سؤالي عن المنتجات، توفر المخزون، أو المقارنة بين الأسعار."
         return "Hello! I am SouqSmart, your AI shopping assistant. Ask me to recommend products, compare options, or verify what is currently in stock."
+
+    # 2.5 Clarification message for ambiguous or under-specified requests
+    if intent and intent.clarification_needed and intent.clarification_message and not intent.currency_note:
+        return intent.clarification_message
 
     # 3. Currency limitation note / clarification request (clearly distinguish unfiltered suggestions)
     if intent and intent.currency_note:
@@ -233,3 +276,125 @@ def chat_reply(
     if language == "ar":
         return "لم يتم العثور على منتجات مطابقة في الكتالوج."
     return "No matching catalog products were found."
+
+
+def generate_policy_reply(
+    intent: ParsedIntent,
+    knowledge_chunks: list[dict[str, Any]] | None = None,
+    language: str = "en",
+    user_message: str = "",
+) -> str:
+    """Deterministic, extractive policy reply grounded strictly in NiceShop approved policy documents."""
+    itype = intent.intent_type
+    is_ar = language == "ar"
+
+    if itype == "shipping_policy":
+        msg = (user_message or intent.clean_query or "").lower()
+        is_international = bool(re.search(r"(?:خارج\s+مصر|برة\s+مصر|بره\s+مصر|دولي|دولياً|عالمي|internationally|abroad|worldwide|overseas|outside\s+egypt|international\s+shipping)", msg))
+        is_free_inquiry = bool(re.search(r"(?:شحن\s+مجاني|توصيل\s+مجاني|الشحن\s+مجاني|مجانا|free\s+shipping|shipping\s+is\s+free|is\s+shipping\s+free)", msg))
+
+        if is_international:
+            if is_ar:
+                return (
+                    "سياسة المتجر المعتمدة لا توضح أو تؤكد توفر الشحن الدولي (خارج مصر) حالياً. "
+                    "الخيارات المسجلة في وثيقة الشحن المعتمدة تشمل فئات الشحن والتوصيل الأساسية (اقتصادي/مجاني، عادي، سريع) "
+                    "دون تحديد للتغطية الجغرافية خارج البلاد.\n\n"
+                    "يُرجى التواصل مباشرة مع فريق خدمة عملاء متجر نايس شوب (NiceShop) للتأكد من إمكانية الشحن لوجهتك."
+                )
+            return (
+                "The verified store policy does not specify or confirm whether international shipping (outside Egypt) is currently available. "
+                "The approved shipping document only outlines standard delivery tiers (Economy/Free, Standard, Express) without geographic coverage details.\n\n"
+                "Please contact NiceShop customer support directly to confirm whether delivery to your location is supported."
+            )
+
+        if is_free_inquiry:
+            if is_ar:
+                return (
+                    "وفقاً لسياسة الشحن والتوصيل المعتمدة لمتجر نايس شوب (NiceShop):\n\n"
+                    "• الشحن الاقتصادي / المجاني: رسوم الشحن 0 (مدة التوصيل التقديرية من 5 إلى 10 أيام عمل).\n"
+                    "• الشحن العادي (Standard Shipping): رسوم الشحن 10 (مدة التوصيل من 3 إلى 7 أيام عمل).\n"
+                    "• الشحن السريع (Express Shipping): رسوم الشحن 25 (مدة التوصيل من 1 إلى 3 أيام عمل).\n\n"
+                    "تنبيه هام: شروط أو حدود تطبيق الشحن المجاني (مثل وجود حد أدنى للطلب) غير محددة في وثيقة الشحن المعتمدة، "
+                    "كما أن قيم الرسوم مسجلة كأرقام (0 و 10 و 25) دون تأكيد رمز العملة؛ يُرجى مراجعة صفحة إتمام الطلب (Checkout) أو التواصل مع خدمة العملاء للتأكد من الشروط قبل الدفع."
+                )
+            return (
+                "According to NiceShop's verified shipping policy:\n\n"
+                "• An 'Economy / Free Shipping' option is available at rate 0 (estimated delivery: 5 to 10 business days).\n"
+                "• Standard Shipping: Rate 10 (estimated delivery: 3 to 7 business days).\n"
+                "• Express Shipping: Rate 25 (estimated delivery: 1 to 3 business days).\n\n"
+                "Important Note: Specific eligibility criteria or minimum order thresholds for free shipping are not specified in the verified policy document. "
+                "Additionally, fee values are recorded as numbers (0, 10, 25) without a confirmed currency code; please check the final total on the Checkout page or contact customer support for details."
+            )
+
+        if is_ar:
+            return (
+                "وفقاً لسياسة وفئات الشحن والتوصيل المعتمدة لمتجر نايس شوب (NiceShop):\n\n"
+                "• الشحن الاقتصادي / المجاني: رسوم الشحن 0 (مدة التوصيل التقديرية من 5 إلى 10 أيام عمل).\n"
+                "• الشحن العادي (Standard Shipping): رسوم الشحن 10 (مدة التوصيل التقديرية من 3 إلى 7 أيام عمل).\n"
+                "• الشحن السريع (Express Shipping): رسوم الشحن 25 (مدة التوصيل التقديرية من 1 إلى 3 أيام عمل).\n\n"
+                "تنبيه هام: قيم رسوم الشحن مسجلة كأرقام (0 و 10 و 25) دون تأكيد رمز العملة في قاعدة البيانات، "
+                "وتفاصيل تغطية المحافظات المحددة غير مفصلة في وثيقة الشحن المعتمدة؛ يرجى مراجعة إجمالي الرسوم والعملة المحددة في شاشة إتمام الطلب (Checkout) قبل الدفع أو التواصل مع خدمة العملاء."
+            )
+        return (
+            "According to NiceShop's verified shipping and delivery policy:\n\n"
+            "• Economy / Free Shipping: Rate 0 (Estimated delivery: 5 to 10 business days).\n"
+            "• Standard Shipping: Rate 10 (Estimated delivery: 3 to 7 business days).\n"
+            "• Express Shipping: Rate 25 (Estimated delivery: 1 to 3 business days).\n\n"
+            "Important Note: Shipping rates are recorded as numbers (0, 10, 25) without a confirmed currency code in the database, "
+            "and specific regional/governorate coverage details are not specified in the approved policy document. Please verify the final shipping cost and currency on the Checkout page before payment or contact customer support."
+        )
+
+    if itype == "return_policy":
+        if is_ar:
+            return (
+                "وفقاً لسياسة الاسترجاع المعتمدة لمتجر نايس شوب (NiceShop):\n\n"
+                "• مدة الاسترجاع: يحق للعميل طلب استرجاع المنتجات خلال 30 يوماً من تاريخ الشراء أو الاستلام، "
+                "بشرط أن يكون المنتج بحالته الأصلية غير مستخدم ومرفقاً بالعلبة الأصلية وكافة الملحقات.\n"
+                "• إجراءات المعالجة والدعم: طلبات الاسترجاع والاستبدال تتم وتُعالج يدوياً وبشكل حصري عبر التواصل المباشر مع خدمة عملاء المتجر "
+                "(لا توجد بوابة إلكترونية آلية للاسترجاع)."
+            )
+        return (
+            "According to NiceShop's verified return policy:\n\n"
+            "• Return Window: Customers may request a return within 30 days of purchase or delivery, "
+            "provided the item is in its original unused condition with all original packaging and accessories.\n"
+            "• Processing & Support: All returns and exchanges are handled manually and exclusively through direct contact with customer service "
+            "(there is no automated online returns portal)."
+        )
+
+    if itype == "payment_policy":
+        if is_ar:
+            return (
+                "وفقاً لسياسة الدفع المعتمدة لمتجر نايس شوب (NiceShop):\n\n"
+                "• طريقة الدفع المتاحة: الدفع نقداً عند الاستلام فقط (Cash on Delivery - COD Only)؛ حيث يقوم العميل بدفع إجمالي الطلب نقداً لمندوب الشحن فور استلام الشحنة.\n"
+                "• وسائل غير مدعومة: المتجر لا يدعم حالياً الدفع عبر البطاقات الائتمانية (Visa / Mastercard) أونلاين، "
+                "ولا يدعم باي بال (PayPal) أو المحافظ الإلكترونية أو التحويلات البنكية الرقمية."
+            )
+        return (
+            "According to NiceShop's verified payment policy:\n\n"
+            "• Accepted Method: The only payment method currently accepted is Cash on Delivery (COD Only). Payment is made in cash directly to the courier upon delivery.\n"
+            "• Unsupported Methods: The store does not currently accept online credit/debit cards (Visa / Mastercard), PayPal, digital wallets, or online bank transfers."
+        )
+
+    if itype == "warranty_policy":
+        if is_ar:
+            return (
+                "لا توجد سياسة ضمان رسمية معتمدة لمتجر نايس شوب في الوقت الحالي.\n\n"
+                "تنبيه هام: نافذة الاسترجاع المحددة بـ 30 يوماً هي سياسة استرجاع فقط ولا تعتبر ضماناً بأي حال من الأحوال. "
+                "ننصحك بالتواصل المباشر مع خدمة العملاء للتأكد من حالة ضمان المنتج أو مراجعة بطاقة ضمان الشركة المصنعة المرفقة داخل علبة المنتج إن وجدت."
+            )
+        return (
+            "NiceShop does not currently have an official approved store warranty policy in verified records.\n\n"
+            "Important Notice: The 30-day return window is strictly a return policy and is not considered a warranty. "
+            "We recommend contacting customer support directly to inquire about product warranty status or checking for any manufacturer warranty card included inside the product packaging."
+        )
+
+    # General store questions or unsupported policies
+    if is_ar:
+        return (
+            "المعلومات المطلوبة غير متوفرة في سجلات وسياسات متجر نايس شوب المعتمدة حالياً. "
+            "يرجى التواصل مباشرة مع فريق خدمة العملاء والدعم الفني للحصول على المساعدة."
+        )
+    return (
+        "The requested policy information is not currently available in NiceShop's verified store records. "
+        "Please contact store customer support directly for assistance."
+    )
